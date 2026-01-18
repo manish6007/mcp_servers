@@ -1,6 +1,6 @@
 # Combined MCP Server
 
-A production-grade MCP (Model Context Protocol) server combining **Redshift query capabilities** and **Knowledgebase vector store** features.
+A production-grade MCP (Model Context Protocol) server combining **Redshift query capabilities** and **Knowledgebase vector store** features with **TOON schema encoding** for Text2SQL agents.
 
 ## Features
 
@@ -16,66 +16,77 @@ Large results (>100 rows) are automatically stored in S3 with 20 sample rows ret
 - **build_vectorstore** - Build vector store from S3 markdown files
 - **query_vectorstore** - Hybrid search (semantic + keyword) with RRF reranking
 - **get_vectorstore_status** - Check build status and cache stats
+- **query_schemas** - 🆕 TOON-encoded schema retrieval for Text2SQL agents
+
+### TOON Schema Encoding
+
+TOON (Token-Optimized Object Notation) reduces token usage by ~40-50% compared to JSON.
+
+**Example TOON output:**
+```
+table: trade
+columns[13]{name,type,description}:
+  trade_id,varchar,Unique identifier for the trade
+  trade_date,timestamp,Date and time when the trade was executed
+```
+
+**Markdown schema format:**
+```markdown
+# trade
+
+| column_name | data_type | description |
+|-------------|-----------|-------------|
+| trade_id    | varchar   | Unique identifier |
+```
 
 ## Quick Start
 
 ### Local Development
 
-1. **Install uv (if not already installed):**
-   ```bash
-   curl -LsSf https://astral.sh/uv/install.sh | sh
-   # Or on Windows: powershell -c "irm https://astral.sh/uv/install.ps1 | iex"
-   ```
-
-2. **Start infrastructure:**
-   ```bash
-   docker-compose up -d postgres localstack
-   ```
-
-3. **Install dependencies:**
-   ```bash
-   uv pip install -e ".[dev]"
-   ```
-
-4. **Configure environment:**
-   ```bash
-   cp .env.example .env.local
-   # Edit .env.local with your settings
-   ```
-
-5. **Run the server:**
-   ```bash
-   # With MCP Inspector
-   mcp dev src/combined_mcp_server/main.py
-
-   # Or directly
-   python -m combined_mcp_server.main
-   ```
-
-### ECS Deployment
-
 ```bash
-# Build container
-docker build -t combined-mcp-server .
+# Install uv
+curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Run with health checks
-docker run -p 8080:8080 --env-file .env combined-mcp-server
-docker run -p 8080:8080 --env-file .env.local -v C:\Users\manis\.aws:/home/appuser/.aws:ro mcp
+# Start infrastructure
+docker-compose up -d postgres localstack
+
+# Install dependencies
+uv pip install -e ".[dev]"
+
+# Configure
+cp .env.example .env.local
+
+# Run server
+mcp dev src/combined_mcp_server/main.py
 ```
 
-Health endpoints:
-- `GET /health` - Liveness probe
-- `GET /ready` - Readiness probe
-- `GET /status` - Detailed status
+### Docker Deployment
+
+```bash
+docker build -t mcp .
+docker run -p 8080:8080 --env-file .env.local -v ~/.aws:/home/appuser/.aws:ro mcp
+```
+
+Health endpoints: `/health`, `/ready`, `/status`
+
+### Streamlit Chat App
+
+```bash
+cd examples
+streamlit run app.py
+```
+
+Features:
+- LlamaIndex ReAct agent with Bedrock Claude
+- Dynamic MCP tool discovery
+- Agent trace UI showing tool calls and outputs
 
 ## Configuration
-
-See `.env.example` for all configuration options. Key settings:
 
 | Variable | Description |
 |----------|-------------|
 | `REDSHIFT_CLUSTER_ID` | Redshift cluster identifier |
-| `POSTGRES_SECRET_NAME` | Secrets Manager secret for pgvector DB |
+| `POSTGRES_SECRET_NAME` | Secrets Manager secret for pgvector |
 | `KNOWLEDGEBASE_S3_BUCKET` | S3 bucket with markdown files |
 | `BEDROCK_EMBEDDING_MODEL` | Titan embedding model ID |
 
@@ -86,30 +97,25 @@ See `.env.example` for all configuration options. Key settings:
 │                  Combined MCP Server                 │
 ├─────────────────────┬───────────────────────────────┤
 │   Redshift Tools    │     Knowledgebase Tools       │
-│  ─────────────────  │  ───────────────────────────  │
 │  • run_query        │  • build_vectorstore          │
 │  • list_schemas     │  • query_vectorstore          │
 │  • list_tables      │  • get_vectorstore_status     │
-│  • describe_table   │                               │
+│  • describe_table   │  • query_schemas (TOON)       │
 ├─────────────────────┴───────────────────────────────┤
-│                    Core Services                     │
-│  AWS (Secrets Manager, S3, Bedrock, Redshift)       │
-│  PostgreSQL + pgvector                              │
+│  AWS (S3, Bedrock, Redshift) │ PostgreSQL+pgvector  │
 └─────────────────────────────────────────────────────┘
+```
+
+## Database Schema
+
+```sql
+ALTER TABLE knowledgebase.documents ADD COLUMN schema_toon TEXT;
 ```
 
 ## Testing
 
 ```bash
-# Unit tests
-pytest tests/ -v
-
-# With coverage
 pytest tests/ -v --cov=combined_mcp_server
-
-# Integration tests (requires Docker)
-docker-compose up -d
-pytest tests/ -v -m integration
 ```
 
 ## License
