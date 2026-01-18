@@ -159,6 +159,24 @@ async def get_vectorstore_status() -> dict[str, Any]:
     return await kb_tools.get_vectorstore_status()
 
 
+@mcp.tool()
+async def query_schemas(
+    query: str,
+    top_k: int = 3,
+) -> dict[str, Any]:
+    """
+    Search for database schemas relevant to a Text2SQL query.
+    
+    Returns TOON-encoded schema information optimized for LLM context.
+    Use this tool to get table and column definitions before generating SQL.
+    
+    Args:
+        query: The natural language query (e.g., "total sales by region")
+        top_k: Maximum number of schemas to return (default: 3)
+    """
+    return await kb_tools.query_schemas(query=query, top_k=top_k)
+
+
 # =============================================================================
 # Startup and Main
 # =============================================================================

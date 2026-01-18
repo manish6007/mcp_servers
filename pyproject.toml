@@ -19,6 +19,7 @@ dependencies = [
     "structlog>=24.0.0",
     "starlette>=0.38.0",
     "uvicorn>=0.30.0",
+    "toneformat>=1.0.0",
 ]
 
 [project.optional-dependencies]

@@ -113,16 +113,6 @@ async def query_vectorstore(
     try:
         vector_store = get_vector_store()
 
-        # Check if vector store is ready
-        status = await vector_store.get_build_status()
-        if status.status != "ready":
-            return {
-                "success": False,
-                "error": f"Vector store is not ready. Current status: {status.status}",
-                "status": status.status,
-                "suggestion": "Run build_vectorstore to initialize the vector store.",
-            }
-
         # Check cache
         cache = get_query_cache()
         cached_results = cache.get(query, top_k, search_type)
@@ -206,6 +196,90 @@ async def get_vectorstore_status() -> dict[str, Any]:
 
     except Exception as e:
         logger.error("get_vectorstore_status failed", error=str(e))
+        return {
+            "success": False,
+            "error": str(e),
+            "error_type": type(e).__name__,
+        }
+
+
+async def query_schemas(
+    query: str,
+    top_k: int = 3,
+) -> dict[str, Any]:
+    """
+    Search for database schemas relevant to a Text2SQL query.
+    
+    Returns TOON-encoded schema information optimized for LLM context.
+    Use this tool to get table and column definitions before generating SQL.
+    
+    Args:
+        query: The natural language query (e.g., "total sales by region")
+        top_k: Maximum number of schemas to return (default: 3)
+    
+    Returns:
+        Dictionary containing:
+        - success: Whether the search succeeded
+        - schemas: List of TOON-encoded schema strings for agent context
+        - tables: List of table names found
+        - result_count: Number of schemas returned
+    """
+    logger.info(
+        "query_schemas tool invoked",
+        query_preview=query[:50] if query else "",
+        top_k=top_k,
+    )
+
+    start_time = time.time()
+
+    try:
+        vector_store = get_vector_store()
+
+        # Perform hybrid search (best for schema matching)
+        results = await vector_store.search(
+            query=query,
+            top_k=top_k,
+            search_type="hybrid",
+        )
+
+        logger.debug(
+            "query_schemas search returned",
+            result_count=len(results),
+            sample_keys=list(results[0].keys()) if results else [],
+        )
+
+        # Extract TOON schemas and table names
+        schemas = []
+        tables = []
+        for r in results:
+            schema_toon = r.get("schema_toon")
+            logger.debug(
+                "Checking result for schema_toon",
+                has_schema_toon=schema_toon is not None,
+                content_preview=r.get("content", "")[:50] if r.get("content") else None,
+            )
+            if schema_toon:
+                schemas.append(schema_toon)
+                # Extract table name from metadata
+                metadata = r.get("metadata", {})
+                if isinstance(metadata, str):
+                    import json
+                    metadata = json.loads(metadata)
+                if metadata.get("title"):
+                    tables.append(metadata["title"])
+
+        query_time_ms = (time.time() - start_time) * 1000
+
+        return {
+            "success": True,
+            "schemas": schemas,
+            "tables": tables,
+            "result_count": len(schemas),
+            "query_time_ms": query_time_ms,
+        }
+
+    except Exception as e:
+        logger.error("query_schemas failed", error=str(e))
         return {
             "success": False,
             "error": str(e),

@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS knowledgebase.documents (
     id SERIAL PRIMARY KEY,
     content TEXT NOT NULL,
     metadata JSONB DEFAULT '{}',
+    schema_toon TEXT,  -- Pre-encoded TOON schema for Text2SQL agent
     embedding vector(1024),  -- Titan embed v2 dimension
     fts tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED,
     source_path TEXT,

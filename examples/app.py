@@ -6,11 +6,13 @@ import os
 import sys
 import json
 import asyncio
+import time
 import streamlit as st
 import nest_asyncio
 from llama_index.core.agent import ReActAgent
 from llama_index.core.workflow import Context
 from llama_index.llms.bedrock_converse import BedrockConverse
+from llama_index.core.tools import ToolOutput
 
 # Standard fix for Streamlit/Windows async loop conflicts
 nest_asyncio.apply()
@@ -81,12 +83,33 @@ def get_agent_and_context():
     llm = get_llm()
     
     # Discovery tools using the cached function
-    tools = discover_tools_cached()
+    all_tools = discover_tools_cached()
+    
+    # Filter out Redshift tools - only keep knowledgebase tools
+    redshift_tools = {"run_query", "list_schemas", "list_tables", "describe_table"}
+    tools = [t for t in all_tools if t.metadata.name not in redshift_tools]
+    
     st.session_state.discovered_tools = [t.metadata.name for t in tools]
+
+    # System prompt to guide tool selection
+    system_prompt = """You are a helpful assistant with access to database tools.
+
+IMPORTANT TOOL SELECTION RULES:
+1. For Text2SQL or schema lookups: ALWAYS use `query_schemas` first. 
+   It returns TOON-encoded schema info (table names, columns, types, descriptions).
+2. Do NOT use `query_vectorstore` for schema lookups - it returns raw text, not structured schemas.
+3. Do NOT use `list_schemas`, `list_tables`, or `describe_table` (Redshift tools) unless the user explicitly asks about Redshift.
+
+When a user asks about database tables, columns, or wants to write SQL:
+1. Call `query_schemas` with the natural language query
+2. Use the returned TOON schema to understand table structure
+3. Generate SQL based on the schema information
+"""
 
     agent = ReActAgent(
         tools=tools,
         llm=llm,
+        system_prompt=system_prompt,
     )
     
     # Initialize context if needed
@@ -96,12 +119,61 @@ def get_agent_and_context():
     return agent, st.session_state.workflow_ctx
 
 
-async def run_chat(prompt):
-    """Run the chat workflow."""
+async def run_chat_with_trace(prompt):
+    """Run the chat workflow with full trace capture."""
     agent, ctx = get_agent_and_context()
+    
+    trace = {
+        "tool_calls": [],
+        "start_time": time.time(),
+    }
+    
+    # Wrap tools to capture calls
+    original_tools = agent.tools
+    wrapped_tools = []
+    
+    for tool in original_tools:
+        original_call = tool.call
+        original_acall = tool.acall
+        tool_name = tool.metadata.name
+        
+        async def make_traced_acall(t_name, orig_acall):
+            async def traced_acall(*args, **kwargs):
+                call_start = time.time()
+                try:
+                    result = await orig_acall(*args, **kwargs)
+                    call_time = (time.time() - call_start) * 1000
+                    trace["tool_calls"].append({
+                        "tool": t_name,
+                        "args": kwargs,
+                        "result": str(result)[:2000],  # Truncate for display
+                        "time_ms": call_time,
+                        "success": True,
+                    })
+                    return result
+                except Exception as e:
+                    trace["tool_calls"].append({
+                        "tool": t_name,
+                        "args": kwargs,
+                        "error": str(e),
+                        "success": False,
+                    })
+                    raise
+            return traced_acall
+        
+        # Apply tracing
+        tool.acall = await make_traced_acall(tool_name, original_acall)
+        wrapped_tools.append(tool)
+    
+    agent.tools = wrapped_tools
+    
     handler = agent.run(prompt, ctx=ctx)
     response = await handler
-    return str(response)
+    
+    trace["total_time_ms"] = (time.time() - trace["start_time"]) * 1000
+    trace["response"] = str(response)
+    
+    return trace
 
 
 def main():
@@ -118,10 +190,12 @@ def main():
         )
         os.environ["MCP_SERVER_URL"] = mcp_url
         
-        # Proactively discover tools to show in sidebar
-        tools = discover_tools_cached()
-        if tools:
-            st.session_state.discovered_tools = [t.metadata.name for t in tools]
+        # Proactively discover tools to show in sidebar (filtered)
+        all_tools = discover_tools_cached()
+        redshift_tools = {"run_query", "list_schemas", "list_tables", "describe_table"}
+        filtered_tools = [t for t in all_tools if t.metadata.name not in redshift_tools]
+        if filtered_tools:
+            st.session_state.discovered_tools = [t.metadata.name for t in filtered_tools]
 
         st.markdown("---")
         st.markdown("### 🛠️ Discovered Tools")
@@ -162,7 +236,6 @@ def main():
                         result = run_async(build_tool.acall())
                         
                         # The result of acall is a ToolOutput
-                        import json
                         try:
                             # Try to parse the content as JSON
                             res_data = json.loads(str(result))
@@ -215,17 +288,66 @@ def main():
         with st.chat_message("assistant"):
             with st.spinner("Thinking..."):
                 try:
-                    # Run chat logic via robust runner
-                    answer = run_async(run_chat(prompt))
+                    # Run chat with trace capture
+                    trace = run_async(run_chat_with_trace(prompt))
+                    answer = trace["response"]
+                    elapsed_ms = trace["total_time_ms"]
+                    tool_calls = trace.get("tool_calls", [])
+                    
                 except Exception as e:
                     import traceback
                     print(f"Agent Error: {traceback.format_exc()}")
                     st.error(f"Error: {e}")
                     answer = f"I'm sorry, I encountered an error: {type(e).__name__}"
-                    
+                    elapsed_ms = 0
+                    tool_calls = []
+                
+                # Show response
                 st.markdown(answer)
+                
+                # Show execution time
+                if elapsed_ms > 0:
+                    st.caption(f"⏱️ Response time: {elapsed_ms:.0f}ms ({elapsed_ms/1000:.2f}s)")
+                
+                # Show tool trace in expandable section
+                if tool_calls:
+                    with st.expander(f"🔧 Agent Trace ({len(tool_calls)} tool calls)", expanded=False):
+                        for i, call in enumerate(tool_calls, 1):
+                            tool_name = call.get("tool", "unknown")
+                            success = call.get("success", False)
+                            status_icon = "✅" if success else "❌"
+                            call_time = call.get("time_ms", 0)
+                            
+                            st.markdown(f"**{i}. {status_icon} `{tool_name}`** ({call_time:.0f}ms)")
+                            
+                            # Show arguments
+                            args = call.get("args", {})
+                            if args:
+                                st.markdown("**Arguments:**")
+                                st.code(json.dumps(args, indent=2, default=str), language="json")
+                            
+                            # Show result or error
+                            if success:
+                                result = call.get("result", "")
+                                st.markdown("**Output:**")
+                                # Check if it looks like TOON format
+                                if result.startswith("table:") or "columns[" in result:
+                                    st.code(result, language="yaml")
+                                else:
+                                    st.code(result[:1500] + ("..." if len(result) > 1500 else ""), language="json")
+                            else:
+                                st.error(f"Error: {call.get('error', 'Unknown')}")
+                            
+                            if i < len(tool_calls):
+                                st.markdown("---")
         
-        st.session_state.messages.append({"role": "assistant", "content": answer})
+        # Store with timing info
+        st.session_state.messages.append({
+            "role": "assistant", 
+            "content": answer,
+            "elapsed_ms": elapsed_ms,
+            "tool_calls": tool_calls,
+        })
 
 
 if __name__ == "__main__":

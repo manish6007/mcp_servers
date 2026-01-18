@@ -60,6 +60,7 @@ docker build -t combined-mcp-server .
 
 # Run with health checks
 docker run -p 8080:8080 --env-file .env combined-mcp-server
+docker run -p 8080:8080 --env-file .env.local -v C:\Users\manis\.aws:/home/appuser/.aws:ro mcp
 ```
 
 Health endpoints:

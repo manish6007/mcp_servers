@@ -15,6 +15,12 @@ from combined_mcp_server.knowledgebase.cache import get_query_cache
 from combined_mcp_server.knowledgebase.embeddings import get_embeddings_client
 from combined_mcp_server.knowledgebase.pg_connection import get_postgres_connection_manager
 from combined_mcp_server.knowledgebase.reranker import get_reranker
+from combined_mcp_server.knowledgebase.schema_parser import (
+    is_schema_markdown,
+    parse_schema_markdown,
+    build_embedding_text,
+    build_schema_toon,
+)
 from combined_mcp_server.utils.logging import get_logger
 from combined_mcp_server.utils.s3 import get_s3_client
 
@@ -35,6 +41,7 @@ class Document:
     metadata: dict[str, Any]
     source_path: str
     chunk_index: int = 0
+    schema_toon: str | None = None  # Pre-encoded TOON for schema files
 
 
 @dataclass
@@ -158,7 +165,33 @@ class VectorStore:
                 # Download file
                 content = s3_client.download_text(bucket, key)
 
-                # Extract title from first heading
+                # Check if this is a schema markdown file
+                if is_schema_markdown(content):
+                    # Parse as schema for TOON encoding
+                    schema = parse_schema_markdown(content)
+                    if schema:
+                        # Use embedding-optimized text for vector
+                        embedding_text = build_embedding_text(schema)
+                        schema_toon = build_schema_toon(schema)
+                        
+                        doc = Document(
+                            content=embedding_text,
+                            metadata={
+                                "title": schema.table_name,
+                                "source_file": key,
+                                "chunk_index": 0,
+                                "total_chunks": 1,
+                                "is_schema": True,
+                            },
+                            source_path=key,
+                            chunk_index=0,
+                            schema_toon=schema_toon,
+                        )
+                        await self._insert_document(doc)
+                        total_chunks += 1
+                        continue  # Skip normal processing
+
+                # Normal document processing (non-schema)
                 title_match = re.search(r"^#\s+(.+)$", content, re.MULTILINE)
                 title = title_match.group(1) if title_match else key.split("/")[-1]
 
@@ -208,11 +241,11 @@ class VectorStore:
         # Generate embedding
         embedding = await self._embeddings.embed_text_async(doc.content)
 
-        # Insert into database
+        # Insert into database with schema_toon if available
         query = """
             INSERT INTO knowledgebase.documents 
-            (content, metadata, embedding, source_path, chunk_index)
-            VALUES (%s, %s, %s, %s, %s)
+            (content, metadata, schema_toon, embedding, source_path, chunk_index)
+            VALUES (%s, %s, %s, %s, %s, %s)
         """
 
         import json
@@ -222,6 +255,7 @@ class VectorStore:
             (
                 doc.content,
                 json.dumps(doc.metadata),
+                doc.schema_toon,
                 embedding,
                 doc.source_path,
                 doc.chunk_index,
@@ -353,7 +387,7 @@ class VectorStore:
 
         sql = """
             SELECT 
-                id, content, metadata,
+                id, content, metadata, schema_toon,
                 1 - (embedding <=> %s::vector) as score
             FROM knowledgebase.documents
             ORDER BY embedding <=> %s::vector
@@ -367,6 +401,7 @@ class VectorStore:
                 "id": row["id"],
                 "content": row["content"],
                 "metadata": row["metadata"],
+                "schema_toon": row.get("schema_toon"),
                 "score": float(row["score"]),
             }
             for row in results
@@ -380,7 +415,7 @@ class VectorStore:
         """Perform keyword (full-text) search."""
         sql = """
             SELECT 
-                id, content, metadata,
+                id, content, metadata, schema_toon,
                 ts_rank_cd(fts, plainto_tsquery('english', %s)) as score
             FROM knowledgebase.documents
             WHERE fts @@ plainto_tsquery('english', %s)
@@ -395,6 +430,7 @@ class VectorStore:
                 "id": row["id"],
                 "content": row["content"],
                 "metadata": row["metadata"],
+                "schema_toon": row.get("schema_toon"),
                 "score": float(row["score"]),
             }
             for row in results

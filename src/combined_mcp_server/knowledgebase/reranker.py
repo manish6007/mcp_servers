@@ -20,6 +20,7 @@ class RankedResult:
     id: int
     content: str
     metadata: dict[str, Any]
+    schema_toon: str | None = None  # TOON-encoded schema for Text2SQL
     semantic_rank: int | None = None
     keyword_rank: int | None = None
     rrf_score: float = 0.0
@@ -94,6 +95,7 @@ class RRFReranker:
                     id=doc_id,
                     content=result["content"],
                     metadata=result.get("metadata", {}),
+                    schema_toon=result.get("schema_toon"),
                 )
             results_by_id[doc_id].semantic_rank = rank
             results_by_id[doc_id].semantic_score = result.get("score")
@@ -106,6 +108,7 @@ class RRFReranker:
                     id=doc_id,
                     content=result["content"],
                     metadata=result.get("metadata", {}),
+                    schema_toon=result.get("schema_toon"),
                 )
             results_by_id[doc_id].keyword_rank = rank
             results_by_id[doc_id].keyword_score = result.get("score")
@@ -162,6 +165,7 @@ class RRFReranker:
                 "id": r.id,
                 "content": r.content,
                 "metadata": r.metadata,
+                "schema_toon": r.schema_toon,
                 "score": r.rrf_score,
                 "semantic_rank": r.semantic_rank,
                 "keyword_rank": r.keyword_rank,
