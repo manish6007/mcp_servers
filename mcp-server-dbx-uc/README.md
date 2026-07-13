@@ -99,6 +99,74 @@ uvx --from /path/to/mcp-server-dbx-uc email-dq-mcp
 | `HISTORICAL_LOOKBACK_DAYS` | no | Window used for null-anomaly historical averages (default `7`). |
 | `LOG_LEVEL` | no | Python log level (default `INFO`). |
 
+## Claude Code configuration
+
+Claude Code (the CLI) manages MCP servers via `claude mcp add` or a
+project-level `.mcp.json`. Either approach gives Claude Code access to
+`execute_sql`, `get_schema`, `get_sample_data`, and the DQ investigation
+tools against your Unity Catalog SQL warehouse.
+
+**Option A -- CLI (recommended for local use):**
+
+Flags (`--env`, `--transport`, `--scope`) must come *before* the server
+name; everything after `--` is passed straight through to the server
+command untouched:
+
+```bash
+claude mcp add \
+  --env DATABRICKS_HOST=https://your-workspace.cloud.databricks.com \
+  --env DATABRICKS_PAT=dapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --env DATABRICKS_WAREHOUSE_ID=0123456789abcdef \
+  --transport stdio \
+  email-dq-mcp \
+  -- uvx email-dq-mcp
+```
+
+Add `--scope user` if you want the server available across all your
+projects instead of just the current repo (default scope is local /
+project-specific).
+
+**Option B -- project-level `.mcp.json`** (checked into the repo, secrets
+supplied via shell env instead of hardcoded):
+
+```json
+{
+  "mcpServers": {
+    "email-dq-mcp": {
+      "command": "uvx",
+      "args": ["email-dq-mcp"],
+      "env": {
+        "DATABRICKS_HOST": "${DATABRICKS_HOST}",
+        "DATABRICKS_PAT": "${DATABRICKS_PAT}",
+        "DATABRICKS_WAREHOUSE_ID": "${DATABRICKS_WAREHOUSE_ID}"
+      }
+    }
+  }
+}
+```
+
+With `.mcp.json`, export `DATABRICKS_HOST` / `DATABRICKS_PAT` /
+`DATABRICKS_WAREHOUSE_ID` in your shell (or a `.env` loaded by your shell
+profile) before launching `claude` -- this keeps the PAT out of version
+control.
+
+For a local checkout instead of the published package, swap the command for:
+
+```bash
+claude mcp add \
+  --env DATABRICKS_HOST=https://your-workspace.cloud.databricks.com \
+  --env DATABRICKS_PAT=dapi_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \
+  --env DATABRICKS_WAREHOUSE_ID=0123456789abcdef \
+  --transport stdio \
+  email-dq-mcp \
+  -- uvx --from /absolute/path/to/mcp-server-dbx-uc email-dq-mcp
+```
+
+Verify it's connected with `claude mcp list`, then ask Claude Code
+something like *"list the columns in main.email_analytics.email_events"*
+or *"run a SELECT COUNT(*) on main.email_analytics.email_events for
+2026-07-11"* to confirm it can reach the warehouse.
+
 ## Claude Desktop configuration
 
 Add to `claude_desktop_config.json`:
